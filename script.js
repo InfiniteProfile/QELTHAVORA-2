@@ -75,7 +75,7 @@ function profileFor(id){
  const title = type==="Unidentified phenomenon" ? "The "+choose(["Unclosed","Pale","Distant","Unmeasured","Quiet"],h>>>16)+" "+choose(["Interval","Fold","Trace","Resonance","Margin"],h>>>20) : name;
  return {id,name:title,type,period:choose(periods,h>>>17),symbol:choose(symbols,h>>>21),subject,description:choose(descriptions,h2),clue:choose(cluePhrases,h>>>24),related:(BigInt(id)+BigInt((h%17)+1)).toString(),h};
 }
-const state={nextId:1n,prepared:0n,batchSize:300n,feedItems:[],renderedStart:0,renderedEnd:0,cardHeight:245,rendering:false,modalReturn:null,searchIndex:[],loading:false,discovered:new Set(JSON.parse(localStorage.getItem("qelthavora-found")||"[]"))};
+const state={nextId:1n,prepared:0n,batchSize:300n,renderedStart:-1,renderedEnd:-1,renderedCols:0,renderedTop:-1,renderedBottom:-1,rowHeight:232,modalReturn:null,loading:false,discovered:new Set(JSON.parse(localStorage.getItem("qelthavora-found")||"[]"))};
 function addLore(){
  $("#structureGrid").innerHTML=structures.map(x=>`<article class="structure-item"><div class="num">${x[0]}</div><div><h3>${x[1]}</h3><p>${x[2]}</p></div></article>`).join("");
  $("#roleList").innerHTML=roles.map(x=>`<div class="role-row"><span>${x[0]}</span><b>${x[1]}</b><p>${x[2]}</p></div>`).join("");
@@ -87,37 +87,73 @@ function addLore(){
 function prepareBatch(){
  if(state.loading)return;
  state.loading=true;
- const start=state.nextId,end=start+state.batchSize;
- // Deterministic batch construction is chunked to keep input responsive.
- const build=()=>{let stop=state.nextId+35n;if(stop>end)stop=end;for(;state.nextId<stop;state.nextId++){state.feedItems.push(profileFor(state.nextId.toString()))}
- if(state.nextId<end){requestIdleCallback(build,{timeout:100})}else{state.prepared=state.feedItems.length;state.loading=false;$("#recordCount").textContent=state.prepared.toString();$("#feedStatus").textContent=state.prepared.toString()+" RECORDS PREPARED";renderFeed();}};
- if("requestIdleCallback"in window)requestIdleCallback(build,{timeout:150});else setTimeout(build,0);
+ const target=state.prepared+state.batchSize;
+ const build=()=>{
+   // Reserve the next consecutive ID range in small slices. Profile content is
+   // deterministic and materialized only for visible cards, avoiding a growing
+   // in-memory array of every record on low-memory devices.
+   const remaining=target-state.prepared;
+   const slice=remaining>50n?50n:remaining;
+   state.prepared+=slice;
+   state.nextId=state.prepared+1n;
+   if(state.prepared<target){
+     if("requestIdleCallback" in window) requestIdleCallback(build,{timeout:100});
+     else setTimeout(build,0);
+   }else{
+     state.loading=false;
+     $("#recordCount").textContent=state.prepared.toString();
+     $("#feedStatus").textContent=state.prepared.toString()+" RECORDS PREPARED";
+     state.renderedStart=-1;
+     renderFeed(true);
+     // If the visitor has already crossed the next threshold, immediately prepare again.
+     maybePrepare();
+   }
+ };
+ if("requestIdleCallback" in window) requestIdleCallback(build,{timeout:100});
+ else setTimeout(build,0);
 }
 function cardHTML(p){return `<article class="profile-card" data-id="${p.id}" tabindex="0" role="button" aria-label="Open ${escapeHTML(p.name)}"><div class="profile-card-top"><span>${escapeHTML(p.type.toUpperCase())}</span><span>${escapeHTML(p.symbol)} &nbsp; ${escapeHTML(p.period)}</span></div><h3>${escapeHTML(p.name)}</h3><p>${escapeHTML(p.description)} Subject: ${escapeHTML(p.subject)}.</p><div class="profile-card-foot"><span>RECORD / ${escapeHTML(p.id)}</span><b>EXAMINE ↗</b></div></article>`}
-function renderFeed(){
- const feed=$("#profileFeed");if(!state.feedItems.length)return;
- // Windowed rendering: a small set of cards stays in the DOM while spacers preserve scroll geometry.
- const scrollY=window.scrollY, rect=feed.getBoundingClientRect(), absoluteTop=scrollY+rect.top;
- const local=Math.max(0,scrollY-absoluteTop);
- const cols=window.matchMedia("(max-width:760px)").matches?1:2;
- const rowHeight=state.cardHeight+12;
- const approximateRow=Math.floor(local/rowHeight);
- const startRow=Math.max(0,approximateRow-4);
- const start=Math.min(state.feedItems.length-1,startRow*cols);
- const count=Math.min(34*cols,state.feedItems.length-start);
- const end=start+count;
- const top=startRow*rowHeight,bottom=Math.max(0,Math.ceil((state.feedItems.length-end)/cols)*rowHeight);
- const cards=state.feedItems.slice(start,end).map(cardHTML).join("");
- feed.innerHTML=`<div style="height:${top}px;grid-column:1/-1" aria-hidden="true"></div>${cards}<div style="height:${bottom}px;grid-column:1/-1" aria-hidden="true"></div>`;
- state.renderedStart=start;state.renderedEnd=end;
+function feedColumns(){return window.matchMedia("(max-width:760px)").matches?1:2}
+function renderFeed(force=false){
+ const feed=$("#profileFeed");
+ if(!feed || state.prepared===0n)return;
+ const cols=feedColumns();
+ const feedTop=feed.getBoundingClientRect().top+window.scrollY;
+ const local=Math.max(0,window.scrollY-feedTop);
+ const visibleRow=Math.floor(local/state.rowHeight);
+ const startRow=Math.max(0,visibleRow-4);
+ const visibleRows=22;
+ const totalProfiles=Number(state.prepared);
+ const totalRows=Math.ceil(totalProfiles/cols);
+ const endRow=Math.min(totalRows,startRow+visibleRows);
+ const start=startRow*cols;
+ const end=Math.min(totalProfiles,endRow*cols);
+ const top=startRow*state.rowHeight;
+ const bottom=Math.max(0,(totalRows-endRow)*state.rowHeight);
+ if(!force && cols===state.renderedCols && start===state.renderedStart && end===state.renderedEnd && top===state.renderedTop && bottom===state.renderedBottom)return;
+ let cards="";
+ for(let i=start;i<end;i++)cards+=cardHTML(profileFor(String(i+1)));
+ // Spacer geometry exactly matches fixed-height rows. Replacing the window therefore
+ // does not change the feed's total height or move the visitor's scroll position.
+ feed.innerHTML=`<div class="feed-spacer" style="height:${top}px" aria-hidden="true"></div>${cards}<div class="feed-spacer" style="height:${bottom}px" aria-hidden="true"></div>`;
+ state.renderedStart=start;state.renderedEnd=end;state.renderedCols=cols;state.renderedTop=top;state.renderedBottom=bottom;
 }
 let renderQueued=false;
-function scheduleRender(){if(renderQueued)return;renderQueued=true;requestAnimationFrame(()=>{renderQueued=false;renderFeed()})}
+function scheduleRender(){
+ if(renderQueued)return;
+ renderQueued=true;
+ requestAnimationFrame(()=>{renderQueued=false;renderFeed();maybePrepare()});
+}
 function maybePrepare(){
- const feedTop= $("#profileFeed").getBoundingClientRect().top+window.scrollY;
- const cols=window.matchMedia("(max-width:760px)").matches?1:2;
- const index=Math.max(0,Math.floor((window.scrollY-feedTop)/(state.cardHeight+12))*cols);
- if(state.prepared<300n || BigInt(index)>=state.prepared-200n){if(!state.loading)prepareBatch()}
+ if(state.loading || state.prepared===0n)return;
+ const feed=$("#profileFeed");
+ const feedTop=feed.getBoundingClientRect().top+window.scrollY;
+ const cols=feedColumns();
+ const row=Math.max(0,Math.floor((window.scrollY-feedTop)/state.rowHeight));
+ const approximateProfile=BigInt(row*cols);
+ // Start a full 300-record batch when the visitor reaches 100 records
+ // before the end of the currently prepared sequence.
+ if(approximateProfile>=state.prepared-200n)prepareBatch();
 }
 function openProfile(id,restore=true){
  const p=profileFor(id);state.modalReturn=restore?window.scrollY:null;
@@ -135,7 +171,8 @@ function search(q){
  if(!query)return;
  const id=canonicalId(query);
  if(id){const p=profileFor(id);results.innerHTML=`<div class="search-result" data-id="${id}"><span>${escapeHTML(p.name)} — ${escapeHTML(p.type)}</span><b>OPEN ↗</b></div>`;return}
- const corpus=[...state.feedItems.slice(0,300),...history.map((x,i)=>({id:"H-"+i,name:x[1],type:"Historical event",subject:x[2],period:x[0]})),...docs.map(x=>({id:x[0],name:x[1],type:"Archive document",subject:x[3]}))];
+ const firstProfiles=[];for(let i=1n;i<=300n;i++)firstProfiles.push(profileFor(i.toString()));
+ const corpus=[...firstProfiles,...history.map((x,i)=>({id:"H-"+i,name:x[1],type:"Historical event",subject:x[2],period:x[0]})),...docs.map(x=>({id:x[0],name:x[1],type:"Archive document",subject:x[3]}))];
  const hits=corpus.filter(p=>(p.name+" "+p.type+" "+(p.subject||"")).toLowerCase().includes(query.toLowerCase())).slice(0,12);
  results.innerHTML=hits.length?hits.map(p=>`<div class="search-result" data-id="${escapeHTML(p.id)}"><span>${escapeHTML(p.name)} <small>— ${escapeHTML(p.type)}</small></span><b>OPEN ↗</b></div>`).join(""):"No matching indexed record. Try an exact profile ID or a broader term.";
 }
@@ -156,12 +193,11 @@ function setup(){
  $("#profileFeed").addEventListener("click",e=>{const card=e.target.closest("[data-id]");if(card)openProfile(card.dataset.id)});
  $("#profileFeed").addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.matches("[data-id]")){e.preventDefault();openProfile(e.target.dataset.id)}});
  $("#modalClose").addEventListener("click",closeModal);$("#profileModal").addEventListener("click",e=>{if(e.target===$("#profileModal"))closeModal()});document.addEventListener("keydown",e=>{if(e.key==="Escape")closeModal()});
- $("#randomProfile").addEventListener("click",()=>{const n=BigInt(Math.floor(Math.random()*Number(state.prepared||300n))+1);openProfile(n.toString(),false)});
+ $("#randomProfile").addEventListener("click",()=>{const limit=state.prepared>0n?state.prepared:300n;const sample=BigInt(Math.floor(Math.random()*1_000_000_000));const n=(sample%limit)+1n;openProfile(n.toString(),false)});
  $("#revealHint").addEventListener("click",()=>{$("#hintText").hidden=!$("#hintText").hidden;discover(0)});
  $("#answerForm").addEventListener("submit",e=>{e.preventDefault();const v=$("#answerInput").value.toLowerCase().replace(/[.,!?]/g," ").replace(/\s+/g," ").trim();if(v==="three measures one interval"||v==="three measures, one interval"){[1,2,3,4].forEach(discover);$("#answerFeedback").textContent="Interpretation accepted. The records remain contradictory, but their measurements now have a shared frame."}else{$("#answerFeedback").textContent="The archive cannot establish that interpretation. Compare what each record measures."}});
- window.addEventListener("scroll",()=>{scheduleRender();maybePrepare()},{passive:true});
- window.addEventListener("resize",scheduleRender);
- const observer=new IntersectionObserver(entries=>{if(entries.some(x=>x.isIntersecting))maybePrepare()},{rootMargin:"1200px 0px"});observer.observe($("#feedSentinel"));
+ window.addEventListener("scroll",scheduleRender,{passive:true});
+ window.addEventListener("resize",()=>{state.renderedStart=-1;renderFeed(true);maybePrepare()});
  // Keep navigation active in view without changing scroll position.
  const sections=$$("main section[id]");const navObserver=new IntersectionObserver(entries=>{entries.forEach(en=>{if(en.isIntersecting){$$(".nav-link").forEach(a=>a.classList.toggle("active",a.getAttribute("href")==="#"+en.target.id))}})},{rootMargin:"-25% 0px -65% 0px"});sections.forEach(s=>navObserver.observe(s));
 }

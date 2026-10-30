@@ -20,12 +20,13 @@ Open `index.html` in a modern browser. No build step, backend, API key, or datab
 
 ## Infinite archive design
 - The first 300 sequential profile IDs are generated at startup.
-- A further batch of 300 is prepared when the visitor approaches the first 100 records / the prepared-batch threshold.
-- The same threshold process repeats indefinitely.
-- Profiles are deterministic: the same decimal ID always resolves to the same profile identity and content.
+- A further batch of 300 is prepared when the visitor reaches 100 records before the end of the prepared sequence. For the first batch, this means preparation begins around profile 100; for the next batch, around profile 400, then 700, 1,000, and so on.
+- Each completed batch triggers another threshold check, so a visitor who has already scrolled past a threshold cannot leave generation stalled.
+- The same threshold process repeats indefinitely, with no configured maximum profile count.
+- Profiles are deterministic: the same decimal ID always resolves to the same profile identity and content. Records are generated from their ID when needed rather than storing every generated object in memory.
 - Profile IDs are normalized and handled as decimal strings; `BigInt` is used for sequential arithmetic, never JavaScript `Number`.
 - Exact ID search accepts arbitrarily long positive decimal strings, including IDs beyond the current feed batch.
-- A virtualized feed keeps only a small visible window of profile cards in the DOM and uses spacer elements to preserve scroll geometry.
+- A virtualized feed keeps a small visible window of cards in the DOM. Fixed-height rows and exact spacer geometry preserve the feed height and scroll position while off-screen cards are recycled. The archive stores only the prepared ID range; it does not retain every generated profile object in a growing array.
 - No code calls `scrollTo` during generation. The only scroll restoration is when a profile modal is closed, returning to the position from which it was opened.
 - Discovery progress is stored locally in `localStorage`.
 
